@@ -2,7 +2,7 @@
 # -*- coding:utf-8-unix -*-
 ###
 ### RIBES.py - RIBES (Rank-based Intuitive Bilingual Evaluation Score) scorer
-### Copyright (C) 2011  Nippon Telegraph and Telephone Corporation
+### Copyright (C) 2011-2013  Nippon Telegraph and Telephone Corporation
 ### 
 ### This program is free software; you can redistribute it and/or
 ### modify it under the terms of the GNU General Public License
@@ -19,6 +19,7 @@
 ### Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 ### 
 ##  History
+##  version 1.02.4 (2013/12/17) Fixed a problem in word alignment
 ##  version 1.02.3 (2012/2/23) Fixed a problem in output
 ##  version 1.02.2 (2011/10/25) Fixed a problem without -o option (in systems without /dev/stdout)
 ##  version 1.02.1 (2011/8/18) Fixed bug on bytes.decode
@@ -40,10 +41,18 @@ import traceback
 from optparse import OptionParser
 from math import exp
 
-_RIBES_VERSION = '1.02.3'
+_RIBES_VERSION = '1.02.4'
 debug = 0
 
 multiws_pattern = re.compile(r'\s+')
+
+### "overlapping" substring counts ( string.count(x) returns "non-overlapping" counts... )
+def overlapping_count (pattern, string):
+    pos = string.find(pattern)
+    if pos > -1:
+        return 1 + overlapping_count (pattern, string[pos+1:])
+    else:
+        return 0
 
 ### calculate Kendall's tau
 def kendall(ref, hyp):
@@ -71,7 +80,12 @@ def kendall(ref, hyp):
         raise RuntimeError ("Reference has no words")
     # check hypothesis length, return "zeros" if no words are found
     elif len(hyp) == 0:
+        if debug > 1: print ("nkt=%g, precision=%g, bp=%g" % (0.0, 0.0, 0.0), file=sys.stderr)
         return (0.0, 0.0, 0.0)
+    # bypass -- return 1.0 for identical hypothesis
+    #elif ref == hyp:
+    #    if debug > 1: print ("nkt=%g, precision=%g, bp=%g" % (nkt, precision, bp), file=sys.stderr)
+    #    return (1.0, 1.0, 1.0)
 
     # calculate brevity penalty (BP), not exceeding 1.0
     bp = min(1.0, exp(1.0 - 1.0 * len(ref)/len(hyp)))
@@ -115,7 +129,6 @@ def kendall(ref, hyp):
 
     for i in range(len(hyp)):
         ### i-th hypthesis word hyp[i]
-        
         if not hyp[i] in ref: 
             ### hyp[i] doesn't exist in reference
             pass
@@ -129,15 +142,15 @@ def kendall(ref, hyp):
         else:
             ### if not, we consider context words...
             # use Unicode-mapped string for efficiency
-            for window in range (1, max(i, len(hyp)-i)):
+            for window in range (1, max(i+1, len(hyp)-i+1)):
                 if window <= i:
                     ngram = mapped_hyp[i-window:i+1]
-                    if mapped_ref.count(ngram) == 1 and mapped_hyp.count(ngram) == 1:
+                    if overlapping_count(ngram, mapped_ref) == 1 and overlapping_count(ngram, mapped_hyp) == 1:
                         intlist.append(mapped_ref.index(ngram) + len(ngram) -1)
                         break
                 if i+window < len(hyp):
                     ngram = mapped_hyp[i:i+window+1]
-                    if mapped_ref.count(ngram) == 1 and mapped_hyp.count(ngram) == 1:
+                    if overlapping_count(ngram, mapped_ref) == 1 and overlapping_count(ngram, mapped_hyp) == 1:
                         intlist.append(mapped_ref.index(ngram))
                         break
 
@@ -164,6 +177,7 @@ def kendall(ref, hyp):
     precision = 1.0 * n / len(hyp)
 
     # return tuple (Normalized Kendall's tau, Unigram Precision, and Brevity Penalty)
+    if debug > 1: print ("nkt=%g, precision=%g, bp=%g" % (nkt, precision, bp), file=sys.stderr)
     return (nkt, precision, bp)
     
 
