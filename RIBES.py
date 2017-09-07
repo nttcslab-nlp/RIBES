@@ -1,8 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # -*- coding:utf-8-unix -*-
 ###
 ### RIBES.py - RIBES (Rank-based Intuitive Bilingual Evaluation Score) scorer
-### Copyright (C) 2011-2013  Nippon Telegraph and Telephone Corporation
+### Copyright (C) 2011-2014  Nippon Telegraph and Telephone Corporation
 ### 
 ### This program is free software; you can redistribute it and/or
 ### modify it under the terms of the GNU General Public License
@@ -19,29 +19,41 @@
 ### Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 ### 
 ##  History
+##  version 1.03   (2014/8/13)  Supports Python 2.6 or higher
+##                              Eliminated encoding option (now RIBES.py only supports utf-8)
+##                              Limits word delimiters to ASCII white spaces (now multibyte spaces cannot be used as word delimiters)
 ##  version 1.02.4 (2013/12/17) Fixed a problem in word alignment
-##  version 1.02.3 (2012/2/23) Fixed a problem in output
+##  version 1.02.3 (2012/2/23)  Fixed a problem in output
 ##  version 1.02.2 (2011/10/25) Fixed a problem without -o option (in systems without /dev/stdout)
-##  version 1.02.1 (2011/8/18) Fixed bug on bytes.decode
-##  version 1.02 (2011/8/16) Improved distinguishment of same words, with a little code refactoring
-##  version 1.01 (2011/8/10) Fixed bug on empty lines
-##  version 1.0  (2011/8/1)  Initial release
+##  version 1.02.1 (2011/8/18)  Fixed bug on bytes.decode
+##  version 1.02   (2011/8/16)  Improved distinguishment of same words, with a little code refactoring
+##  version 1.01   (2011/8/10)  Fixed bug on empty lines
+##  version 1.0    (2011/8/1)   Initial release
 #
 # Reference:
+#  Tsutomu Hirao, Hideki Isozaki, Katsuhito Sudoh, Kevin Duh, Hajime Tsukada, and Masaaki Nagata,
+#  "Evaluating Translation Quality with Word Order Correlations,"
+#  Journal of Natural Language Processing, Vol. 21, No. 3, pp. 421-444, June, 2014 (in Japanese).
+#
 #  Hideki Isozaki, Tsutomu Hirao, Kevin Duh, Katsuhito Sudoh, and Hajime Tsukada,
-#  "Automatic Evaluation of Translation Quality for Distant Language Pairs",
+#  "Automatic Evaluation of Translation Quality for Distant Language Pairs,"
 #  Proceedings of the 2010 Conference on Empirical Methods in Natural Language Processing (EMNLP),
 #  pp. 944--952 Cambridge MA, October, 2010
 #  -- http://aclweb.org/anthology-new/D/D10/D10-1092.pdf
 #
 
-import os,sys,re
+from __future__ import print_function
+import sys
+if type(sys.version_info) is not tuple and sys.version_info.major != 3:
+    reload(sys)
+    sys.setdefaultencoding("utf-8")
+import os,re
 import datetime
 import traceback
 from optparse import OptionParser
 from math import exp
 
-_RIBES_VERSION = '1.02.4'
+_RIBES_VERSION = '1.03'
 debug = 0
 
 multiws_pattern = re.compile(r'\s+')
@@ -110,10 +122,13 @@ def kendall(ref, hyp):
         # append Unicode hexadecimal for word w (with offset of 0x4e00 -- CJK character range)
         _ref += str(hex(worddict[w] + 0x4e00)).replace('0x', '', 1)
     # decode Unicode (UTF-16 BigEndian) sequences to UTF-8
-    if sys.version_info.minor > 1:
-        mapped_ref = bytes.fromhex(_ref).decode(encoding="utf_16_be")
+    if type(sys.version_info) is not tuple and sys.version_info.major == 3:
+        if sys.version_info.minor > 1:
+            mapped_ref = bytes.fromhex(_ref).decode(encoding="utf_16_be")
+        else:
+            mapped_ref = bytes.fromhex(_ref).decode("utf_16_be")
     else:
-        mapped_ref = bytes.fromhex(_ref).decode("utf_16_be")
+        mapped_ref = _ref.decode("hex").decode("utf_16_be")
 
     for w in hyp:
         # if w is not found in dictironary "worddict", add it.
@@ -122,10 +137,13 @@ def kendall(ref, hyp):
         # append Unicode hexadecimal for word w (with offset of 0x4e00 -- CJK character range)
         _hyp += str(hex(worddict[w] + 0x4e00)).replace('0x', '', 1)
     # decode Unicode (UTF-16 BigEndian) sequences to UTF-8
-    if sys.version_info.minor > 1:
-        mapped_hyp = bytes.fromhex(_hyp).decode(encoding="utf_16_be")
+    if type(sys.version_info) is not tuple and sys.version_info.major == 3:
+        if sys.version_info.minor > 1:
+            mapped_hyp = bytes.fromhex(_hyp).decode(encoding="utf_16_be")
+        else:
+            mapped_hyp = bytes.fromhex(_hyp).decode("utf_16_be")
     else:
-        mapped_hyp = bytes.fromhex(_hyp).decode("utf_16_be")
+        mapped_hyp = _hyp.decode("hex").decode("utf_16_be")
 
     for i in range(len(hyp)):
         ### i-th hypthesis word hyp[i]
@@ -286,16 +304,15 @@ class Corpus:
     Attributes (public):
         filename   : corpus file name (set as public for error messages about the corpus)
     """
-    def __init__ (self, _file, case=False, encoding="utf-8"):
+    def __init__ (self, _file, case=False):
         """Constructor.
 
-        Initialize a Corpus instance by a corpus file with a certain encoding (default utf-8).
+        Initialize a Corpus instance by a corpus file with a utf-8 encoding.
 
         Argument:
             _file : corpus file of "sentence-per-line" format
         Keyword:
             case     : preserve uppercase letters or not, default: False
-            encoding : corpus file encoding, default: utf-8
         """
 
         # initialize contents
@@ -306,7 +323,7 @@ class Corpus:
         self.filename = _file
 
         # read corpus
-        with open (_file, encoding=encoding) as fp:
+        with open (_file) as fp:
             for line in fp:
                 # eliminates unnecessary spaces (white spaces and tabs) in each sentence
                 line = multiws_pattern.sub(r' ', line.strip())
@@ -316,7 +333,7 @@ class Corpus:
                     line = line.lower()
 
                 # split the sentence to a word list and append it to the corpus sentence list
-                self.__sentence.append( line.split() )
+                self.__sentence.append( line.split(" ") )
 
                 # count words
                 self.__numwords += len(self.__sentence[-1])
@@ -365,7 +382,7 @@ def outputRIBES (options, args, file=sys.stdout):
             print ("# reference file [" + str(len(REFS)) + "] : " + _ref, file=file)
 
         # read multi references, construct and store "Corpus" instance
-        REFS.append( Corpus(_ref, case=options.case, encoding=options.encoding) )
+        REFS.append( Corpus(_ref, case=options.case) )
 
     for i in range(len(args)):
         if debug > 0:
@@ -373,7 +390,7 @@ def outputRIBES (options, args, file=sys.stdout):
             print ("# system output file [" + str(i) + "] : " + args[i], file=file)
 
         # read system output and construct "Corpus" instance
-        result = Corpus(args[i], case=options.case, encoding=options.encoding)
+        result = Corpus(args[i], case=options.case)
 
         # evaluate by RIBES -- "best_ribes" stands for the best score by multi-references, RIBESs stands for the score list for each references
         (best_ribes, RIBESs) = evaluator.eval (result, REFS)
@@ -413,9 +430,6 @@ def main ():
 
     # -b/--beta : "Brevity Penalty" to the {beta}-th power
     optparser.add_option("-b", "--beta",     dest="beta",     default=0.10,                       type="float",  help="hyperparameter beta  (default=0.10)", metavar="FLOAT")
-
-    # -e/--encoding : file encoding
-    optparser.add_option("-e", "--encoding", dest="encoding", default="utf-8",                    type="string", help="file encoding",                       metavar="ENCODING")
 
     # -o/--output : output file
     optparser.add_option("-o", "--output",   dest="output",   default="",              type="string", help="log output file",                     metavar="FILE")
