@@ -19,6 +19,8 @@
 ### Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 ### 
 ##  History
+##  version 1.03.1 (2014/9/8)   Fixed a compatibility problem of "split", which allows zero-length references wrongly with Python 2.
+##                              Introduced a new option "-z/--emptyref" to allow zero-length references, which would be helpful for evaluation on data with blank lines.
 ##  version 1.03   (2014/8/13)  Supports Python 2.6 or higher
 ##                              Eliminated encoding option (now RIBES.py only supports utf-8)
 ##                              Limits word delimiters to ASCII white spaces (now multibyte spaces cannot be used as word delimiters)
@@ -67,7 +69,7 @@ def overlapping_count (pattern, string):
         return 0
 
 ### calculate Kendall's tau
-def kendall(ref, hyp):
+def kendall(ref, hyp, emptyref=False):
     """Calculates Kendall's tau between a reference and a hypothesis
 
     Calculates Kendall's tau (also unigram precision and brevity penalty (BP))
@@ -76,6 +78,7 @@ def kendall(ref, hyp):
     Arguments:
         ref : list of reference words
         sub : list of system output (hypothesis) words
+        (optional) emptyref : allow empty reference translations (ignored in the evaluation)
 
     Returns:
         A tuple (nkt, precision, bp)
@@ -89,7 +92,10 @@ def kendall(ref, hyp):
 
     # check reference length, raise RuntimeError if no words are found.
     if len(ref) == 0:
-        raise RuntimeError ("Reference has no words")
+        if emptyref == True:
+            return (None, None, None)
+        else:
+            raise RuntimeError ("Reference has no words")
     # check hypothesis length, return "zeros" if no words are found
     elif len(hyp) == 0:
         if debug > 1: print ("nkt=%g, precision=%g, bp=%g" % (0.0, 0.0, 0.0), file=sys.stderr)
@@ -175,9 +181,11 @@ def kendall(ref, hyp):
     ### At least two word correspondences are needed for rank correlation
     n = len(intlist)
     if n == 1 and len(ref) == 1:
+        if debug > 1: print ("nkt=%g, precision=%g, bp=%g" % (1.0, 1.0/len(hyp), bp), file=sys.stderr)
         return (1.0, 1.0/len(hyp), bp)
     elif n < 2:
         # if not, return score 0.0
+        if debug > 1: print ("nkt=%g, precision=%g, bp=%g" % (0.0, 0.0, bp), file=sys.stderr)
         return (0.0, 0.0, bp)
 
     ### calculation of rank correlation coefficient
@@ -227,7 +235,7 @@ class RIBESevaluator:
         self.__output = output
 
 
-    def eval (self, hyp, REFS):
+    def eval (self, hyp, REFS, emptyref=False):
         """Evaluate a system output with multiple references.
 
         Calculates RIBES for a system output (hypothesis) with multiple references,
@@ -237,11 +245,11 @@ class RIBESevaluator:
         Arguments:
             hyp  : "Corpus" instance of hypothesis
             REFS : list of "Corpus" instances of references
+            (optional) emptyref : allow empty reference translations (default: False; ignored in the evaluation)
 
         Returns:
-            A tuple (_best_ribes_acc, _RIBES_ACC)
+            A floating point value _best_ribes_acc
                 - _best_ribes_acc : best corpus-wise RIBES among multi-reference
-                - _RIBES_ACC      : list of corpus-wise RIBES for each reference
 
         Raises:
             RuntimeError : #sentences of hypothesis and reference doesn't match
@@ -255,41 +263,48 @@ class RIBESevaluator:
 
         # initialize "best" corpus-wise score
         _best_ribes_acc = 0.0
-        # initialize individual corpus-wise score list
-        _RIBES_ACC = [ 0.0 ] * len(REFS)
+        # the number of valid sentences with at least one non-empty reference translations
+        _num_valid_refs = 0
 
         # scores each hypothesis
         for i in range (len(hyp)):
             # initialize "best" sentence-wise score
-            _best_ribes = 0.0
+            _best_ribes = -1.0
 
             # for each reference
             for r in range(len(REFS)):
                 try:
                     # calculate Kendall's tau, unigram precision, and brevity penalty.
-                    (nkt, precision, bp) = kendall(REFS[r][i], hyp[i])
+                    (nkt, precision, bp) = kendall(REFS[r][i], hyp[i], emptyref=emptyref)
                 except Exception as e:
                     # if the function "kendall" raises an exception, throw toward the main function
                     print ("Error in " + REFS[r].filename + " line " + str(i), file=sys.stderr)
                     raise e
 
-                # RIBES = (normalized Kendall's tau) * (unigram_precision ** alpha) * (brevity_penalty ** beta)
-                _ribes = nkt * (precision ** self.__alpha) * (bp ** self.__beta)
-                # accumulate RIBES for "individual" corpus-wise score for (r+1)-th reference
-                _RIBES_ACC[r] += _ribes / len(hyp)
-                # maintain the best sentence-wise score
-                if _ribes > _best_ribes:
-                    _best_ribes = _ribes
+                # in case of an empty reference, ignore this
+                if nkt != None:
+                    # RIBES = (normalized Kendall's tau) * (unigram_precision ** alpha) * (brevity_penalty ** beta)
+                    _ribes = nkt * (precision ** self.__alpha) * (bp ** self.__beta)
 
-            # accumulate the "best" sentence-wise score for the "best" corpus-wise score
-            _best_ribes_acc += _best_ribes / len(hyp)
+                    # maintain the best sentence-wise score
+                    if _ribes > _best_ribes:
+                        _best_ribes = _ribes
 
-            # print "best" sentence-wise score if __sent is True
-            if self.__sent and self.__output != None:
-                print ("%.6f alpha=%f beta=%f %s sentence %d" % (_best_ribes, self.__alpha, self.__beta, hyp.filename, i), file=self.__output)
+            if _best_ribes > -1.0:
+                # found a non-empty reference translation
+                _num_valid_refs += 1
 
-        # returns the tuple of the "best" corpus-wise RIBES and score list for each reference
-        return (_best_ribes_acc, _RIBES_ACC)
+                # accumulate the "best" sentence-wise score for the "best" corpus-wise score
+                _best_ribes_acc += _best_ribes 
+
+                # print "best" sentence-wise score if __sent is True
+                if self.__sent and self.__output != None:
+                    print ("%.6f alpha=%f beta=%f %s sentence %d" % (_best_ribes, self.__alpha, self.__beta, hyp.filename, i), file=self.__output)
+            elif self.__sent and self.__output != None:
+                print ("%.6f alpha=%f beta=%f %s sentence %d" % (-float("inf"), self.__alpha, self.__beta, hyp.filename, i), file=self.__output)
+
+        # returns the "best" corpus-wise RIBES
+        return _best_ribes_acc / _num_valid_refs
 
 
 class Corpus:
@@ -333,7 +348,10 @@ class Corpus:
                     line = line.lower()
 
                 # split the sentence to a word list and append it to the corpus sentence list
-                self.__sentence.append( line.split(" ") )
+                if len(line) == 0:
+                    self.__sentence.append( [] )
+                else:
+                    self.__sentence.append( line.split(" ") )
 
                 # count words
                 self.__numwords += len(self.__sentence[-1])
@@ -393,7 +411,7 @@ def outputRIBES (options, args, file=sys.stdout):
         result = Corpus(args[i], case=options.case)
 
         # evaluate by RIBES -- "best_ribes" stands for the best score by multi-references, RIBESs stands for the score list for each references
-        (best_ribes, RIBESs) = evaluator.eval (result, REFS)
+        best_ribes = evaluator.eval (result, REFS, emptyref=options.emptyref)
 
         # print resutls
         print ("%.6f alpha=%f beta=%f %s" % (best_ribes, options.alpha, options.beta, args[i]), file=file)
@@ -433,6 +451,9 @@ def main ():
 
     # -o/--output : output file
     optparser.add_option("-o", "--output",   dest="output",   default="",              type="string", help="log output file",                     metavar="FILE")
+
+    # -z/--emptyref : allow empty reference translations (ignored in the evaluation)
+    optparser.add_option("-z", "--emptyref",     dest="emptyref",     default=False, action="store_true",                help="allow empty reference translations (default: False -- raise RuntimeError in that case)")
 
     # args : system outputs
 
