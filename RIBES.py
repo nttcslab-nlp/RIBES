@@ -19,7 +19,11 @@
 ### Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 ### 
 ##  History
-##  version 1.01 (2011/8/?) Fixed bug on empty lines
+##  version 1.02.3 (2012/2/23) Fixed a problem in output
+##  version 1.02.2 (2011/10/25) Fixed a problem without -o option (in systems without /dev/stdout)
+##  version 1.02.1 (2011/8/18) Fixed bug on bytes.decode
+##  version 1.02 (2011/8/16) Improved distinguishment of same words, with a little code refactoring
+##  version 1.01 (2011/8/10) Fixed bug on empty lines
 ##  version 1.0  (2011/8/1)  Initial release
 #
 # Reference:
@@ -36,7 +40,7 @@ import traceback
 from optparse import OptionParser
 from math import exp
 
-_RIBES_VERSION = '1.0'
+_RIBES_VERSION = '1.02.3'
 debug = 0
 
 multiws_pattern = re.compile(r'\s+')
@@ -65,72 +69,85 @@ def kendall(ref, hyp):
     # check reference length, raise RuntimeError if no words are found.
     if len(ref) == 0:
         raise RuntimeError ("Reference has no words")
+    # check hypothesis length, return "zeros" if no words are found
     elif len(hyp) == 0:
         return (0.0, 0.0, 0.0)
 
     # calculate brevity penalty (BP), not exceeding 1.0
     bp = min(1.0, exp(1.0 - 1.0 * len(ref)/len(hyp)))
 
-    ### bigrams may be needed to determine one-to-one word correspondence
-    # reference bigrams
-    refbi = [ref[i] + ' ' + ref[i+1] for i in range(len(ref) - 1)]
-    # hypothesis bigrams
-    hypbi = [hyp[i] + ' ' + hyp[i+1] for i in range(len(hyp) - 1)]
-
     
     ### determine which ref. word corresponds to each hypothesis word
     # list for ref. word indices
     intlist = []
+
+
+    ### prepare helper pseudo-string representing ref. and hyp. word sequences as strings,
+    ### by mapping each word into non-overlapping Unicode characters
+    # Word ID (dictionary)
+    worddict = {}
+    # Unicode hexadecimal sequences for ref. and words
+    _ref = ""
+    _hyp = ""
+    for w in ref:
+        # if w is not found in dictironary "worddict", add it.
+        if w not in worddict:
+            worddict[w] = len(worddict)
+        # append Unicode hexadecimal for word w (with offset of 0x4e00 -- CJK character range)
+        _ref += str(hex(worddict[w] + 0x4e00)).replace('0x', '', 1)
+    # decode Unicode (UTF-16 BigEndian) sequences to UTF-8
+    if sys.version_info.minor > 1:
+        mapped_ref = bytes.fromhex(_ref).decode(encoding="utf_16_be")
+    else:
+        mapped_ref = bytes.fromhex(_ref).decode("utf_16_be")
+
+    for w in hyp:
+        # if w is not found in dictironary "worddict", add it.
+        if w not in worddict:
+            worddict[w] = len(worddict)
+        # append Unicode hexadecimal for word w (with offset of 0x4e00 -- CJK character range)
+        _hyp += str(hex(worddict[w] + 0x4e00)).replace('0x', '', 1)
+    # decode Unicode (UTF-16 BigEndian) sequences to UTF-8
+    if sys.version_info.minor > 1:
+        mapped_hyp = bytes.fromhex(_hyp).decode(encoding="utf_16_be")
+    else:
+        mapped_hyp = bytes.fromhex(_hyp).decode("utf_16_be")
 
     for i in range(len(hyp)):
         ### i-th hypthesis word hyp[i]
         
         if not hyp[i] in ref: 
             ### hyp[i] doesn't exist in reference
+            pass
             # go on to the next hyp. word
-            continue 
-            
-        ### we can determine one-to-one word correspondence by only unigram
-        if ref.count(hyp[i]) == 1 and hyp.count(hyp[i]) == 1:
+        elif ref.count(hyp[i]) == 1 and hyp.count(hyp[i]) == 1:
+            ### if we can determine one-to-one word correspondence by only unigram
             ### one-to-one correspondence
             # append the index in reference
             intlist.append(ref.index(hyp[i]))
             # go on to the next hyp. word
-            continue
-
-        ### we can't determine one-to-one correspondence when hyp[i] appears twice or more in hyp. or ref.
-        # using next word hyp[i+1]
-        if i < len(hyp) - 1:
-            # bigram "hyp[i] hyp[i+1]"
-            fwdbi = hyp[i] + ' ' + hyp[i+1]
-
-            if refbi.count(fwdbi) == 1 and hypbi.count(fwdbi) == 1:
-                ### one-to-one correspondence by bigram
-                # append the index in reference
-                intlist.append(refbi.index(fwdbi))
-                # go on to the next hyp. word
-                continue
-
-        # using previous word hyp[i-1]
-        if i > 0:
-            # bigram "hyp[i-1] hyp[i]"
-            bwdbi = hyp[i-1] + ' ' + hyp[i]
-
-            if refbi.count(bwdbi) == 1 and hypbi.count(bwdbi) == 1:
-                ### one-to-one correspondence by bigram
-                # append the index in reference
-                intlist.append(refbi.index(bwdbi) + 1)
-                # go on to the next hyp. word
-                continue
-
-        # none of above
-        continue
+        else:
+            ### if not, we consider context words...
+            # use Unicode-mapped string for efficiency
+            for window in range (1, max(i, len(hyp)-i)):
+                if window <= i:
+                    ngram = mapped_hyp[i-window:i+1]
+                    if mapped_ref.count(ngram) == 1 and mapped_hyp.count(ngram) == 1:
+                        intlist.append(mapped_ref.index(ngram) + len(ngram) -1)
+                        break
+                if i+window < len(hyp):
+                    ngram = mapped_hyp[i:i+window+1]
+                    if mapped_ref.count(ngram) == 1 and mapped_hyp.count(ngram) == 1:
+                        intlist.append(mapped_ref.index(ngram))
+                        break
 
     ### At least two word correspondences are needed for rank correlation
     n = len(intlist)
-    if n < 2:
+    if n == 1 and len(ref) == 1:
+        return (1.0, 1.0/len(hyp), bp)
+    elif n < 2:
         # if not, return score 0.0
-        return (0.0, 0.0, bp)  
+        return (0.0, 0.0, bp)
 
     ### calculation of rank correlation coefficient
     # count "ascending pairs" (intlist[i] < intlist[j])
@@ -158,7 +175,7 @@ class RIBESevaluator:
     Attributes (private):
         __sent   : show sentence-level scores or not
         __alpha  : hyperparameter alpha, for (unigram_precision)**alpha
-        __beta   : hyperparameter beta,  for (brebity_penalty)**beta
+        __beta   : hyperparameter beta,  for (brevity_penalty)**beta
         __output : output file name
     """
     def __init__ (self, sent=False, alpha=0.25, beta=0.10, output=sys.stdout):
@@ -316,6 +333,45 @@ class Corpus:
             return self.__sentence[index]
 
 ###
+### wrapper function for output
+###
+def outputRIBES (options, args, file=sys.stdout):
+    # print start time
+    print ("# RIBES evaluation start at " + str(datetime.datetime.today()), file=sys.stderr)
+
+    # initialize "RIBESevaluator" instance
+    evaluator = RIBESevaluator (sent=options.sent, alpha=options.alpha, beta=options.beta, output=file)
+
+    # REFS : list of "Corpus" instance (for multi reference)
+    REFS = []
+
+    for _ref in options.ref:
+        if debug > 0:
+            # print reference file name (if debug > 0)
+            print ("# reference file [" + str(len(REFS)) + "] : " + _ref, file=file)
+
+        # read multi references, construct and store "Corpus" instance
+        REFS.append( Corpus(_ref, case=options.case, encoding=options.encoding) )
+
+    for i in range(len(args)):
+        if debug > 0:
+            # print system output file name (if debug > 0)
+            print ("# system output file [" + str(i) + "] : " + args[i], file=file)
+
+        # read system output and construct "Corpus" instance
+        result = Corpus(args[i], case=options.case, encoding=options.encoding)
+
+        # evaluate by RIBES -- "best_ribes" stands for the best score by multi-references, RIBESs stands for the score list for each references
+        (best_ribes, RIBESs) = evaluator.eval (result, REFS)
+
+        # print resutls
+        print ("%.6f alpha=%f beta=%f %s" % (best_ribes, options.alpha, options.beta, args[i]), file=file)
+
+    # print end time
+    print ("# RIBES evaluation done at " + str(datetime.datetime.today()), file=sys.stderr)
+
+
+###
 ### main function
 ###
 def main ():
@@ -348,7 +404,7 @@ def main ():
     optparser.add_option("-e", "--encoding", dest="encoding", default="utf-8",                    type="string", help="file encoding",                       metavar="ENCODING")
 
     # -o/--output : output file
-    optparser.add_option("-o", "--output",   dest="output",   default="/dev/stdout",              type="string", help="log output file",                     metavar="FILE")
+    optparser.add_option("-o", "--output",   dest="output",   default="",              type="string", help="log output file",                     metavar="FILE")
 
     # args : system outputs
 
@@ -358,41 +414,14 @@ def main ():
     # set debug level (global)
     debug = options.debug
 
-    # output file is automatically closed ...
-    with open (options.output, 'w') as ofp:
-        # print start time
-        print ("# RIBES evaluation start at " + str(datetime.datetime.today()), file=sys.stderr)
+    if len(options.output) == 0:
+        # output to stdout
+        outputRIBES (options, args)
+    else:
+        # output file is automatically closed ...
+        with open (options.output, 'w') as ofp:
+            outputRIBES (options, args, file=ofp)
 
-        # initialize "RIBESevaluator" instance
-        evaluator = RIBESevaluator (sent=options.sent, alpha=options.alpha, beta=options.beta, output=ofp)
-
-        # REFS : list of "Corpus" instance (for multi reference)
-        REFS = []
-
-        for _ref in options.ref:
-            if debug > 0:
-                # print reference file name (if debug > 0)
-                print ("# reference file [" + str(len(REFS)) + "] : " + _ref, file=ofp)
-
-            # read multi references, construct and store "Corpus" instance
-            REFS.append( Corpus(_ref, case=options.case, encoding=options.encoding) )
-
-        for i in range(len(args)):
-            if debug > 0:
-                # print system output file name (if debug > 0)
-                print ("# system output file [" + str(i) + "] : " + args[i], file=ofp)
-
-            # read system output and construct "Corpus" instance
-            result = Corpus(args[i], case=options.case, encoding=options.encoding)
-
-            # evaluate by RIBES -- "best_ribes" stands for the best score by multi-references, RIBESs stands for the score list for each references
-            (best_ribes, RIBESs) = evaluator.eval (result, REFS)
-
-            # print resutls
-            print ("%.6f alpha=%f beta=%f %s" % (best_ribes, options.alpha, options.beta, args[i]), file=ofp)
-
-        # print end time
-        print ("# RIBES evaluation done at " + str(datetime.datetime.today()), file=sys.stderr)
 
 
 if __name__ == "__main__":
